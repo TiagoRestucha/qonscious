@@ -23,8 +23,6 @@ def test_aer_sampler_basic_run():
     qc.measure_all()
 
     ibm_token = os.getenv("IBM_QUANTUM_TOKEN")
-    if not ibm_token:
-        pytest.skip("IBM token not set")
     adapter = AerSimulatorAdapter.based_on(token=ibm_token, backend_name="ibm_brisbane")
     result: ExperimentResult = adapter.run(qc, shots=1024)
 
@@ -55,10 +53,9 @@ def test_aer_sampler_basic_run():
     assert all(isinstance(timestamps[k], str) for k in timestamps)
 
 
+@pytest.mark.ibm_token_required
 def test_props():
     ibm_token = os.getenv("IBM_QUANTUM_TOKEN")
-    if not ibm_token:
-        pytest.skip("IBM token not set")
 
     service = QiskitRuntimeService(channel="ibm_quantum_platform", token=ibm_token)
     backend_to_compare_to = service.backend("ibm_brisbane")

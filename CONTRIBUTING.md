@@ -53,6 +53,23 @@ We use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (f
 
 # 6.	Development notes
 
+## Setting up dependencies
+
+This project is organized with a pyproject.toml file, so there is no longer a need for a requirements.txt file.
+
+Python version is set in .python-version
+
+We recommend working in a Python virtual environment. The following snippet of code provides examples of most of the tasks you'll need to complete. 
+
+```bash
+python -m venv .venv 
+source .venv/bin/activate
+pip install -U pip wheel
+pip install -e ".[dev,notebooks,viz,docs]" # you can leave notebooks and viz out if you are only working on the framework.
+```
+
+The **-e flag** in pip install tells pip to install Qonscious as a dependency so you can import from any Jupyter notebook working on the same venv while letting you edit the framework.
+
 ## Typing
 
 This project uses pyright as a typechecker (In VSCode it will work via PyLance). Settings are defined in pyrightconfig.json
@@ -76,7 +93,7 @@ ruff format .
 
 Make sure that any extensions/improvement/changes you contribute are covered by unit tests.
 
-Mark test methods that interact with IBM's backend (thus requiring a token) with the annotation `@pytest.mark.ibm_token_required`
+Mark test methods that interact with IBM's backend (thus requiring a token) with the annotation `@pytest.mark.ibm_token_required` or `@pytest.mark.ionq_apikey_required` if they interact with IONQ's backend. 
 
 Use:
 * `pytest` : to run all tests
@@ -89,15 +106,28 @@ Use:
 
 There is a _vscode_example_settings.json file that you can rename to .vscode/settings.json . It provides most default settings that help VSC find tests, work with notebooks, etc. 
 
+
+## ruff
+
+pyproject.toml includes default configurations for ruff (linting, etc.). Ruff is part of the [dev] dependencies.
+
+To use ruff from the command line (and let ruff format and tidy up code),  do as follows:
+
+```python
+ruff check . --fix
+ruff format .
+```
+
+## pyright
+
+This project uses pyright as a typechecker (In VSCode it will work via PyLance).
+
+Settings are defined in pyrightconfig.json
+
+
 # Keep documentation up to date
 
 We use mkdocs + mkdocstrings to generate documentation.
-
-## One-time setup
-- Install deps: `pip install -e ".[docs]"` (or `pip install mkdocs mkdocs-material mkdocstrings[python]`)
-- Ensure you have:
-  - `mkdocs.yml` at repo root
-  - `docs/index.md`, `docs/reference/index.md` (with `::: qonscious`)
 
 ## Write good docstrings + type hints
 - Use [Google style](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html) consistently.
