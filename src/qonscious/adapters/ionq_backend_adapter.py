@@ -69,15 +69,13 @@ class IonQBackendAdapter(BackendAdapter):
 
     @property
     def t1s(self) -> dict[int, float]:
-        raise Exception("Not yet implemented")
-        n_qubits = self._backend_configuration.n_qubits
-        return {i: self._backend_properties.t1(i) for i in range(n_qubits)}
+      
+        return {}
 
     @property
     def t2s(self) -> dict[int, float]:
-        raise Exception("Not yet implemented")
-        n_qubits = self._backend_configuration.n_qubits
-        return {i: self._backend_properties.t2(i) for i in range(n_qubits)}
+    
+        return {}
 
     def run(self, circuit: QuantumCircuit, **kwargs) -> ExperimentResult:
         kwargs.setdefault("shots", 1024)
