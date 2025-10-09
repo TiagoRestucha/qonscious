@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
+
 from qiskit_aer.noise import (
     NoiseModel,
     ReadoutError,
@@ -51,7 +52,7 @@ class CustomNoisyBackendAdapter(BaseSamplerAdapter):
         depol_prob_2q: float = 0.01,
         readout_error_prob: float = 0.02,
         thermal_population: float = 0.01,
-        enable_custom_errors: bool = False,  # ignored; kept for compatibility
+
     ):
         self._n_qubits = n_qubits
         
