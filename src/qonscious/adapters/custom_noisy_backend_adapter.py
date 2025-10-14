@@ -80,62 +80,44 @@ class CustomNoisyBackendAdapter(BaseSamplerAdapter):
         self.sampler = Sampler()
 
     def _build_noise_model(self) -> NoiseModel:
-        from qiskit_aer.noise import NoiseModel, ReadoutError, depolarizing_error, thermal_relaxation_error, pauli_error
-
         nm = NoiseModel()
-
-        # Depolarizing channels
         depol_1q = depolarizing_error(self.depol_prob_1q, 1)
         depol_2q = depolarizing_error(self.depol_prob_2q, 2)
+        single_qubit_gates = ["x", "sx", "rx", "ry", "rz", "h", "s", "sdg", "t", "tdg", "z", "p", "id"]
+        two_qubit_gates = ["cx", "cz", "swap"]
 
-        single_qubit_gates = ["x","sx","rx","ry","rz","h","s","sdg","t","tdg","z","p","id"]
-        two_qubit_gates    = ["cx","cz","swap"]
-
-        # Single-qubit thermal relaxation + depolarizing noise
+        # Single-qubit errors: thermal + depolarizing + pauli idle
+        pauli_x_idle = pauli_error([("X", 0.005), ("I", 0.995)])
         for q in range(self._n_qubits):
-            t1 = self._t1_times[q] * 1000  # µs -> ns
-            t2 = self._t2_times[q] * 1000
-            gtime = self._gate_times["single"]
-            thermal_1q = thermal_relaxation_error(t1, t2, gtime, excited_state_population=self.thermal_population)  # type: ignore[arg-type]
+            t1, t2 = self._t1_times[q] * 1000, self._t2_times[q] * 1000
+            thermal_1q = thermal_relaxation_error(t1, t2, self._gate_times["single"], excited_state_population=self.thermal_population)  # type: ignore[arg-type]
             err_1q = thermal_1q.compose(depol_1q)
             for g in single_qubit_gates:
                 nm.add_quantum_error(err_1q, g, [q])
+            nm.add_quantum_error(pauli_x_idle, "id", [q])
 
-        # Two-qubit thermal relaxation + depolarizing noise
-        gtime2 = self._gate_times["two"]
+        # Two-qubit errors: thermal + depolarizing
         for q1 in range(self._n_qubits):
-            for q2 in range(self._n_qubits):
-                if q1 == q2:
-                    continue
-                t1a = self._t1_times[q1]*1000; t2a = self._t2_times[q1]*1000
-                t1b = self._t1_times[q2]*1000; t2b = self._t2_times[q2]*1000
-                th_a = thermal_relaxation_error(t1a, t2a, gtime2, excited_state_population=self.thermal_population)  # type: ignore[arg-type]
-                th_b = thermal_relaxation_error(t1b, t2b, gtime2, excited_state_population=self.thermal_population)  # type: ignore[arg-type]
+            for q2 in range(q1 + 1, self._n_qubits):
+                t1a, t2a = self._t1_times[q1] * 1000, self._t2_times[q1] * 1000
+                t1b, t2b = self._t1_times[q2] * 1000, self._t2_times[q2] * 1000
+                th_a = thermal_relaxation_error(t1a, t2a, self._gate_times["two"], excited_state_population=self.thermal_population)  # type: ignore[arg-type]
+                th_b = thermal_relaxation_error(t1b, t2b, self._gate_times["two"], excited_state_population=self.thermal_population)  # type: ignore[arg-type]
                 err_2q = th_a.tensor(th_b).compose(depol_2q)
                 for g in two_qubit_gates:
                     nm.add_quantum_error(err_2q, g, [q1, q2])
+                    nm.add_quantum_error(err_2q, g, [q2, q1])
 
-        # Idle/environment example on the identity gate
-        pauli_x_idle = pauli_error([("X", 0.005), ("I", 0.995)])
-        for q in range(self._n_qubits):
-            nm.add_quantum_error(pauli_x_idle, "id", [q])
-
-        # Single-qubit readout errors
-        p01 = self.readout_error_prob * 0.8
-        p10 = self.readout_error_prob
+        # Readout errors
+        p01, p10 = self.readout_error_prob * 0.8, self.readout_error_prob
         ro = ReadoutError([[1 - p01, p01], [p10, 1 - p10]])
         for q in range(self._n_qubits):
             nm.add_readout_error(ro, [q])
 
-        # Optional two-qubit readout crosstalk
+        # Two-qubit readout crosstalk
+        p = 0.01
+        ro2 = ReadoutError([[1-p, p/3, p/3, p/3], [p/3, 1-p, p/3, p/3], [p/3, p/3, 1-p, p/3], [p/3, p/3, p/3, 1-p]])
         for q in range(self._n_qubits - 1):
-            p = 0.01
-            ro2 = ReadoutError([
-                [1-p, p/3, p/3, p/3],
-                [p/3, 1-p, p/3, p/3],
-                [p/3, p/3, 1-p, p/3],
-                [p/3, p/3, p/3, 1-p],
-            ])
             nm.add_readout_error(ro2, [q, q+1])
 
         return nm
@@ -147,18 +129,16 @@ class CustomNoisyBackendAdapter(BaseSamplerAdapter):
         from datetime import datetime, timezone
         
         shots = kwargs.get("shots", 1024)
-        created = datetime.now(timezone.utc).isoformat()
+        timestamps = {"created": datetime.now(timezone.utc).isoformat()}
         
         tcirc = self.transpile(circuit)
         job = self.simulator.run(tcirc, shots=shots)
-        running = datetime.now(timezone.utc).isoformat()
+        timestamps["running"] = datetime.now(timezone.utc).isoformat()
         result = job.result()
-        finished = datetime.now(timezone.utc).isoformat()
-        
-        counts = result.get_counts(0)
+        timestamps["finished"] = datetime.now(timezone.utc).isoformat()
         
         return {
-            "counts": counts,
+            "counts": result.get_counts(0),
             "shots": shots,
             "backend_properties": {
                 "name": "CustomNoisyBackendAdapter",
@@ -170,11 +150,7 @@ class CustomNoisyBackendAdapter(BaseSamplerAdapter):
                 "noise_model.t1_avg_us": str(np.mean(list(self._t1_times.values()))),
                 "noise_model.t2_avg_us": str(np.mean(list(self._t2_times.values()))),
             },
-            "timestamps": {
-                "created": created,
-                "running": running,
-                "finished": finished,
-            },
+            "timestamps": timestamps,
             "raw_results": result,
         }
 
@@ -200,34 +176,44 @@ class CustomNoisyBackendAdapter(BaseSamplerAdapter):
         readout_error_prob: float | None = None,
         thermal_population: float | None = None,
     ) -> None:
-        if depol_prob_1q is not None:
-            self.depol_prob_1q = depol_prob_1q
-        if depol_prob_2q is not None:
-            self.depol_prob_2q = depol_prob_2q
-        if readout_error_prob is not None:
-            self.readout_error_prob = readout_error_prob
-        if thermal_population is not None:
-            self.thermal_population = thermal_population
+        params = {
+            "depol_prob_1q": depol_prob_1q,
+            "depol_prob_2q": depol_prob_2q,
+            "readout_error_prob": readout_error_prob,
+            "thermal_population": thermal_population,
+        }
+        for key, value in params.items():
+            if value is not None:
+                setattr(self, key, value)
         
         self.noise_model = self._build_noise_model()
         self.simulator = AerSimulator(noise_model=self.noise_model)
         self.sampler = Sampler()
 
     def print_noise_summary(self) -> None:
-        print("=" * 60)
-        print("Custom Noisy Backend Adapter - Noise Summary")
-        print("=" * 60)
-        print(f"Number of qubits: {self._n_qubits}")
-        print(f"\nDepolarizing Errors:")
-        print(f"  Single-qubit gates: {self.depol_prob_1q:.4f}")
-        print(f"  Two-qubit gates: {self.depol_prob_2q:.4f}")
-        print(f"\nThermal Relaxation:")
-        print(f"  Average T1: {np.mean(list(self._t1_times.values())):.2f} µs")
-        print(f"  Average T2: {np.mean(list(self._t2_times.values())):.2f} µs")
-        print(f"  Thermal population: {self.thermal_population:.4f}")
-        print(f"\nReadout Errors:")
-        print(f"  Readout error probability: {self.readout_error_prob:.4f}")
-        print(f"\nGate Times:")
-        print(f"  Single-qubit gates: {self._gate_times['single']} ns")
-        print(f"  Two-qubit gates: {self._gate_times['two']} ns")
-        print("=" * 60)
+        avg_t1 = np.mean(list(self._t1_times.values()))
+        avg_t2 = np.mean(list(self._t2_times.values()))
+        
+        summary = f"""
+{'='*60}
+Custom Noisy Backend Adapter - Noise Summary
+{'='*60}
+Number of qubits: {self._n_qubits}
+
+Depolarizing Errors:
+  Single-qubit gates: {self.depol_prob_1q:.4f}
+  Two-qubit gates: {self.depol_prob_2q:.4f}
+
+Thermal Relaxation:
+  Average T1: {avg_t1:.2f} µs
+  Average T2: {avg_t2:.2f} µs
+  Thermal population: {self.thermal_population:.4f}
+
+Readout Errors:
+  Readout error probability: {self.readout_error_prob:.4f}
+
+Gate Times:
+  Single-qubit gates: {self._gate_times['single']} ns
+  Two-qubit gates: {self._gate_times['two']} ns
+{'='*60}"""
+        print(summary)

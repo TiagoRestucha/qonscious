@@ -61,7 +61,15 @@ class IonQBackendAdapter(BackendAdapter):
         "QPU dynamic information obtained as indicated in https://quantum.cloud.ibm.com/docs/en/guides/get-qpu-information"
         "Cached after first call - maybe we should not cache it"
         "cache can be cleared with ```del obj._backend_properties```"
-        return self.backend.properties()
+        properties_attr = getattr(self.backend, "properties", None)
+        if properties_attr is None:
+            return {}
+        if callable(properties_attr):
+            try:
+                return properties_attr()
+            except (AttributeError, NotImplementedError):
+                return {}
+        return properties_attr
 
     @property
     def n_qubits(self) -> int:
