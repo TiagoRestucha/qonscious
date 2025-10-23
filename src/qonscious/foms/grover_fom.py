@@ -7,15 +7,15 @@ midiendo su rendimiento en la ejecución del algoritmo de Grover bajo diferentes
 condiciones, penalizando no solo la baja probabilidad de éxito, sino también
 la variabilidad en la medición de los estados objetivo.
 """
-
+# --- Importaciones Estándar ---
 from __future__ import annotations
-import numpy as np
-import random
-import math
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Tuple
 from collections import defaultdict
 from datetime import datetime, timezone
-
+# --- Importaciones Numéricas ---
+import numpy as np
+import random
+import math
 # --- Importaciones de Computación Cuántica ---
 from qiskit import QuantumCircuit, transpile
 from qonscious.foms.figure_of_merit import FigureOfMerit
@@ -313,110 +313,94 @@ class GroverFigureOfMerit(FigureOfMerit):
     6. Calcula el score (Algoritmo 4).
     """
     
-    def __init__(self, num_targets: int, lambd: float = 1.0, mu: float = 1.0):
-        """
-        Inicializa la Figura de Mérito.
-        
-        Args:
-            num_targets (int): El número de targets (M) por defecto.
-            lambd (float): El peso de penalización de la desviación (lambda).
-            mu (float): El peso de penalización de los no-targets (mu).
-        """
+    # grover_fom.py  (solo la clase; asumo que ya tenés _optimal_grover_round
+
+    def __init__(
+        self,
+        num_targets: int,
+        lambd: float = 1.0,
+        mu: float = 1.0,
+        *,                         # ← fuerza keyword-only
+        default_num_qubits: int | None = None,
+        default_search_space_size: int | None = None,
+        default_targets_int: list[int] | None = None,
+        default_shots: int = 1024,
+    ):
+        # parámetros “del score”
         self.default_num_targets = num_targets
         self.default_lambd = lambd
         self.default_mu = mu
+        # parámetros “del espacio de búsqueda” y ejecución
+        self.default_num_qubits = default_num_qubits
+        self.default_search_space_size = default_search_space_size
+        self.default_targets_int = default_targets_int
+        self.default_shots = default_shots
 
     def evaluate(self, backend_adapter: BackendAdapter, **kwargs) -> FigureOfMeritResult:
-        """
-        Ejecuta el benchmark GRADE completo.
-        
-        Acepta `kwargs` para sobrescribir los defaults o pasar parámetros
-        adicionales (num_qubits, search_space_size, targets_int, shots).
-        """
-        
-        # --- Paso I: Configuración y Pre-cálculo ---
-        
-        # Obtener parámetros de ejecución (de kwargs o los defaults)
-        shots = kwargs.get("shots", 1024)
+        # 1) tomar defaults del __init__ y permitir override por kwargs
+        shots = kwargs.get("shots", self.default_shots)
         lambd = kwargs.get("lambda_factor", self.default_lambd)
-        mu    = kwargs.get("mu_factor", self.default_mu)
+        mu    = kwargs.get("mu_factor",     self.default_mu)
+
+        n_user = kwargs.get("num_qubits",          self.default_num_qubits)
+        N_user = kwargs.get("search_space_size",   self.default_search_space_size)
+        T_user = kwargs.get("targets_int",         self.default_targets_int)
+
+        # 2) espacio y targets
         M_req = kwargs.get("num_targets", self.default_num_targets)
-
-        # Parámetros opcionales para definir el espacio de búsqueda (Alg. 2)
-        n_user  = kwargs.get("num_qubits")
-        N_user  = kwargs.get("search_space_size")
-        T_user  = kwargs.get("targets_int")
-
-        # Generar los parámetros del problema (n, N, M, targets)
-        # (Llamada a la función que fusiona Algoritmos 1 y 2)
         search_space, targets_binary = _generate_search_params(
-            num_targets=M_req, num_qubits=n_user, search_space_size=N_user, targets_int=T_user
+            num_targets=M_req,
+            num_qubits=n_user,
+            search_space_size=N_user,
+            targets_int=T_user,
         )
 
-        # Derivar n, N y M finales (reales)
         M = len(targets_binary)
-        n = len(targets_binary[0]) if M > 0 else (n_user if n_user else 1)
-        N = len(search_space) # N = 2^n
-
-        # Calcular iteraciones óptimas (R)
+        n = len(targets_binary[0]) if M > 0 else 1
+        N = len(search_space)
         R = _optimal_grover_rounds(N, M)
 
-        # --- Paso II: Construcción del Circuito de Grover ---
-        
-        # 1. Inicializar circuito con n qubits y n bits clásicos
+        # 3) circuito Grover (oracle+diffusor inline; endianness ya corregida en helpers)
         qc = QuantumCircuit(n, n)
-        
-        # 2. Poner en superposición (Hadamard a todos)
         qc.h(range(n))
-        qc.barrier() # Barrera visual
 
-        # 3. Construir los operadores
-        oracle_qc    = _construct_oracle(targets_binary, n) # (Algoritmo 3)
+        oracle_qc    = _construct_oracle(targets_binary, n)
         diffusion_qc = _construct_diffusion(n)
 
-        # 4. Aplicar R iteraciones de (Oráculo + Difusor)
         for _ in range(R):
             qc.compose(oracle_qc,    qubits=range(n), inplace=True)
             qc.compose(diffusion_qc, qubits=range(n), inplace=True)
-            qc.barrier() # Barrera visual entre iteraciones
+            qc.barrier()
 
-        # 5. Medir al final
         qc.measure(range(n), range(n))
 
-        # --- Paso III: Ejecución en el Backend ---
-        
-        # El backend_adapter se encarga de transpilar y ejecutar
-        experiment_result: ExperimentResult = backend_adapter.run(qc, shots=shots)
-        raw_counts: Dict[str, int] = experiment_result["counts"]
+        # 4) ejecutar (el adapter transpila/ejecuta)
+        experiment_result = backend_adapter.run(qc, shots=shots)
+        if experiment_result is None:
+            raise RuntimeError("backend_adapter.run devolvió None.")
 
-        # --- Paso IV: Cálculo del Score ---
-        
-        # (Llamada al Algoritmo 4)
-        score_metrics = _compute_grade_score(
-            raw_counts, targets_binary, shots, lambd, mu
-        )
+        # soportar dict u objeto
+        raw_counts = (experiment_result.get("counts", {}) if isinstance(experiment_result, dict)
+                      else getattr(experiment_result, "counts", {}))
 
-        # --- Paso V: Formateo del Resultado ---
-        
-        # Recopilar todos los detalles de la ejecución
+        # 5) score GRADE
+        score_metrics = _compute_grade_score(raw_counts, targets_binary, shots, lambd, mu)
+
         properties_details = {
             "num_qubits": n,
             "search_space_size": N,
             "targets_count": M,
             "grover_iterations": R,
             "target_states": targets_binary,
-            **score_metrics, # Incluye 'score', 'P_T', 'sigma_T', 'P_N'
+            **score_metrics,            # score, P_T, sigma_T, P_N
             "lambda_factor": lambd,
             "mu_factor": mu,
             "shots": shots,
         }
 
-        # Formato estándar de Qonscious
-        evaluation_result: FigureOfMeritResult = {
+        return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "figure_of_merit": self.__class__.__name__, # "GroverFigureOfMerit"
+            "figure_of_merit": self.__class__.__name__,
             "properties": properties_details,
-            "experiment_result": experiment_result, # Contiene 'counts', 'job_id', etc.
+            "experiment_result": experiment_result,
         }
-        
-        return evaluation_result
