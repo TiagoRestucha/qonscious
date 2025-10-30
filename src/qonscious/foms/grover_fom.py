@@ -1,61 +1,30 @@
-# grade_benchmark.py
-"""
-Este script implementa el benchmark GRADE (Grover's Algorithm Details Evaluation)
-como una "Figure of Merit" (FoM) para la plataforma Qonscious.
-El objetivo de GRADE es evaluar la calidad de un QPU (Quantum Processing Unit)
-midiendo su rendimiento en la ejecución del algoritmo de Grover bajo diferentes
-condiciones, penalizando no solo la baja probabilidad de éxito, sino también
-la variabilidad en la medición de los estados objetivo.
-"""
-# --- Importaciones Estándar ---
+# grade_fom.py
+"""GRADE: Figure of Merit basada en Grover para Qonscious."""
+
 from __future__ import annotations
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Tuple
-from collections import defaultdict
-from datetime import datetime, timezone
-# --- Importaciones Numéricas ---
-import numpy as np
-import random
+
 import math
-# --- Importaciones de Computación Cuántica ---
-from qiskit import QuantumCircuit, transpile
+import random
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+from qiskit import QuantumCircuit
+
 from qonscious.foms.figure_of_merit import FigureOfMerit
 
-# Type checking para evitar importaciones circulares con los adapters/results
 if TYPE_CHECKING:
     from qonscious.adapters.backend_adapter import BackendAdapter
-    from qonscious.results.result_types import ExperimentResult, FigureOfMeritResult
+    from qonscious.results.result_types import FigureOfMeritResult
 
 
-# --- Funciones Auxiliares del Algoritmo de Grover ---
-#   Duda, ¿ponerlas como métodos estáticos dentro de la clase?
+# -------------------------- Helpers Grover --------------------------
+
 def _optimal_grover_rounds(N: int, M: int) -> int:
-    """
-    Calcula el número óptimo de iteraciones de Grover (R).
-
-    La fórmula teórica para maximizar la probabilidad de éxito es:
-    R = floor( (pi / (4 * theta)) - 0.5 )
-    donde theta = asin(sqrt(M / N)).
-
-    Args:
-        N (int): Tamaño total del espacio de búsqueda (2^n).
-        M (int): Número de estados objetivo (targets).
-
-    Returns:
-        int: Número óptimo de rondas (R).
-    """
-    if M <= 0 or M >= N:
-        # Casos degenerados: 
-        # Si M=0, no hay nada que buscar.
-        # Si M=N, todos son targets (la probabilidad inicial ya es 1).
+    """Número óptimo de iteraciones de Grover (R)."""
+    if not (0 < M < N):
         return 0
-    
-    # Ángulo theta
     theta = math.asin(math.sqrt(M / N))
-    
-    # Cálculo de R
     R = int(math.floor((math.pi / (4 * theta)) - 0.5))
-    
-    # R debe ser al menos 0 (en casos donde M/N es grande, R puede dar negativo)
     return max(0, R)
 
 
@@ -64,289 +33,149 @@ def _generate_search_params(
     num_qubits: int | None = None,
     search_space_size: int | None = None,
     targets_int: list[int] | None = None,
-) -> tuple[list[int], list[str]]:#tuple para poder devolver ambos valores
-    """
-    Determina los parámetros del problema de búsqueda: n, N, y los targets.
-
-    *** Nota sobre el Paper GRADE ***
-    Esta función fusiona la lógica de los Algoritmos 1 y 2 del paper:
-
-    -   Algoritmo 1 (Fallback): Define el problema si el usuario SOLO especifica
-        el número de targets (M). En este caso, n se calcula como el mínimo
-        necesario para albergar M targets (n = ceil(log2(M))).
-    
-    -   Algoritmo 2 (User-Defined): Define el problema si el usuario especifica
-        el tamaño del espacio de búsqueda, ya sea con `num_qubits` (n) o 
-        `search_space_size` (N_real).
-
-    Esta función maneja ambas lógicas para generar la configuración del benchmark.
-    """
-    
-    import math, random
-    
-    # --- Parte 1: Elegimos n (qubits) y N (espacio 2^n) ---
-    # Esta sección implementa la lógica fusionada de Alg. 1 y 2.
-
+) -> tuple[list[int], list[str]]:
+    """Devuelve (search_space, targets_binary) para Grover."""
+    # Elegir n y N
     if num_qubits is not None:
-        # Lógica Algoritmo 2 (Caso A): El usuario fija n
         n = int(num_qubits)
         N = 2**n
-    
     elif search_space_size is not None:
-        # Lógica Algoritmo 2 (Caso B): El usuario fija un N "real"
         N_real = int(search_space_size)
-        if N_real <= 0: raise ValueError("search_space_size debe ser > 0")
-        
-        # n debe ser suficiente para codificar N_real estados (0...N_real-1)
+        if N_real <= 0:
+            raise ValueError("search_space_size debe ser > 0")
         n = math.ceil(math.log2(N_real))
-        # N (el espacio de Hilbert) es la potencia de 2 que lo contiene
-        N = 2**n  
-    
+        N = 2**n
     else:
-        # Lógica Algoritmo 1 (Fallback): Solo se dio M (num_targets)
-        # Se usa el mínimo 'n' que puede contener M targets.
         n = max(1, math.ceil(math.log2(num_targets)))
         N = 2**n
 
-    # --- Parte 2: Elegimos los M targets ---
-    
-    # El espacio "real" es N si n/N fue elegido por Alg. 1 o Alg. 2A,
-    # o N_real si fue elegido por Alg. 2B.
+    # Elegir targets
     max_real = search_space_size if search_space_size is not None else N
     space_real = list(range(max_real))
 
     if targets_int is None:
-        # Si el usuario no provee una lista de targets, los elegimos al azar
         if num_targets > len(space_real):
-            raise ValueError(f"num_targets ({num_targets}) > tamaño del espacio real ({len(space_real)})")
+            raise ValueError(
+                f"num_targets ({num_targets}) > tamaño del espacio real ({len(space_real)})"
+            )
         targets_int = random.sample(space_real, k=num_targets)
-    
     else:
-        # Si el usuario provee los targets, validamos que estén en el rango
         for t in targets_int:
             if not (0 <= t < max_real):
                 raise ValueError(f"target fuera de rango real: {t} ∉ [0,{max_real-1}]")
 
-    # --- Parte 3: Codificamos targets a bitstrings de n bits ---
-    
-    # Los enteros se convierten a strings binarios (bitstrings) de longitud n
-    targets_binary = [format(t, f'0{n}b') for t in targets_int]
-    
-    # El espacio de búsqueda que se ejecutará en Qiskit es siempre 0..2^n-1
-    search_space = list(range(N))  
-
+    targets_binary = [format(t, f"0{n}b") for t in targets_int]
+    search_space = list(range(N))
     return search_space, targets_binary
 
 
-# --- ALGORITMO 3: Construcción del Oráculo Multi-Target ---
-def _construct_oracle(marked_states: List[str], num_qubits: int) -> QuantumCircuit:
-    """
-    Construye un oráculo de fase que marca múltiples estados objetivo.
-    
-    Implementación del Algoritmo 3 del paper GRADE.
-    
-    El oráculo aplica un cambio de fase (-1) a cada estado en `marked_states`.
-    Lo hace iterando sobre cada target y aplicando una compuerta 
-    Multi-Controlled Z (MCZ) "customizada" para ese target.
-    
-    Una MCZ normal aplica fase a |11...1>. Para aplicar fase a |t_1 t_2 ... t_n>,
-    primero se "flipea" (con X) los qubits donde t_i es 0, se aplica la MCZ
-    a |11...1>, y se vuelve a flipear. REVISAR SI ES ASI
-    """
+def _construct_oracle(marked_states: list[str], num_qubits: int) -> QuantumCircuit:
+    """Oráculo multi-objetivo: aplica fase −1 a cada estado marcado."""
     qc = QuantumCircuit(num_qubits, name="Oracle")
-    
-    # Usamos el último qubit como el objetivo para la implementación
-    # H-MCX-H de la MCZ.
-    target_qubit = num_qubits - 1
+    target_q = num_qubits - 1
 
     for target in marked_states:
-        # Qiskit ordena los bits al revés (Little-Endian, qubit 0 es LSB).
-        # Revertimos el bitstring para que coincida con los índices de Qiskit.
         bits_le = list(reversed(target))
-        
-        # Identificamos los qubits que están en '0' en el target
-        zero_indices = [i for i, bit in enumerate(bits_le) if bit == '0']
+        zero_idx = [i for i, b in enumerate(bits_le) if b == "0"]
 
-        # 1. Pre-conditioning: Aplicamos X donde el target es '0'
-        # Esto transforma el estado |target> en |11...1>
-        for i in zero_indices:
+        for i in zero_idx:
             qc.x(i)
 
-        # 2. Aplicar MCZ (Multi-Controlled Z)
-        # Se implementa como H en el último qubit, MCX en el último, H de nuevo.
-        qc.h(target_qubit)
-        
+        qc.h(target_q)
         if num_qubits > 1:
-            control_qubits = list(range(num_qubits - 1))
-            qc.mcx(control_qubits, target_qubit)
+            qc.mcx(list(range(num_qubits - 1)), target_q)
         else:
-            # Caso n=1: MCZ es solo Z (o H-X-H)
-            qc.x(target_qubit)  
-            
-        qc.h(target_qubit)
+            qc.z(target_q)
+        qc.h(target_q)
 
-        # 3. Limpiar (Post-conditioning): Invertimos los X iniciales
-        # Esto devuelve |11...1> al estado |target> (con la fase aplicada)
-        for i in zero_indices:
+        for i in zero_idx:
             qc.x(i)
-
-        # Duda: hay alguna otra manera de construir el oráculo más eficientemente? a lo que me refiero es que si hay muchos targets, este método puede ser costoso.
 
     return qc
 
-# --- Helper: Construcción del Difusor ---
-def _construct_diffusion(num_qubits: int) -> QuantumCircuit:
-    """
-    Construye el operador de Difusión de Grover (inversión sobre la media).
-    
-    Este operador es estándar y no depende de los targets.
-    Se implementa como: H-X-MCZ-X-H (tener en cuenta que MCZ es la inversión de fase y hay productos tensoriales de kronecker).
-    (Aplica una fase -1 solo al estado |0...0> en la base de Hadamard).
-    """
-    dq = QuantumCircuit(num_qubits, name='Diffusion')
-    
-    # 1. Aplicar H a todos los qubits
-    dq.h(range(num_qubits))
-    
-    # 2. Aplicar X a todos los qubits (prepara para MCZ sobre |0...0>)
-    dq.x(range(num_qubits))
-    
-    # 3. Inversión de fase del estado |0...0> (Implementación MCZ)
-    if num_qubits > 1:
-        # MCZ estándar (H-MCX-H) sobre el estado |1...1> (que era |0...0>)
-        dq.h(num_qubits-1)
-        dq.mcx(list(range(num_qubits - 1)), num_qubits-1)
-        dq.h(num_qubits-1)
-    elif num_qubits == 1:
-        # Caso n=1: La inversión sobre |0> es una compuerta Z
-        dq.z(0) 
 
-    # 4. Limpiar X
-    dq.x(range(num_qubits))
-    
-    # 5. Limpiar H
+def _construct_diffusion(num_qubits: int) -> QuantumCircuit:
+    """Difusor estándar (inversión sobre la media)."""
+    dq = QuantumCircuit(num_qubits, name="Diffusion")
     dq.h(range(num_qubits))
-    
+    dq.x(range(num_qubits))
+    if num_qubits > 1:
+        dq.h(num_qubits - 1)
+        dq.mcx(list(range(num_qubits - 1)), num_qubits - 1)
+        dq.h(num_qubits - 1)
+    else:
+        dq.z(0)
+    dq.x(range(num_qubits))
+    dq.h(range(num_qubits))
     return dq
 
-# --- ALGORITMO 4: Cálculo de la Puntuación (Score) ---
-def _compute_grade_score(counts: Dict[str, int], target_states: List[str], shots: int, lambd: float, mu: float) -> Dict[str, Any]:
-    """
-    Calcula la puntuación GRADE y sus componentes (Algoritmo 4 del paper).
-    
-    La puntuación es:
-    Score = P_T - (lambda * sigma_T) - (mu * P_N)
-    
-    Donde:
-    - P_T: Probabilidad acumulada de *todos* los estados objetivo.
-    - P_N: Probabilidad acumulada de *todos* los estados no-objetivo.
-    - sigma_T: Desviación estándar de las probabilidades *entre* los estados objetivo.
-    - lambda, mu: Pesos de penalización.
-    """
-    
-    # P: Diccionario de probabilidades {estado: prob}
-    P = {state: count / shots for state, count in counts.items()}
-    
-    # 1. P_T (Probabilidad Acumulada del Objetivo) , Eq. 1
-    # Suma de las probabilidades de todos los bitstrings que son targets.
-    P_T = sum(P.get(s, 0.0) for s in target_states)
-    
-    # 2. P_N (Probabilidad de Estados No Objetivo) , Eq. 3
-    # 1.0 menos la probabilidad de los objetivos.
-    P_N = 1.0 - P_T
-    M = len(target_states)
-    
-    # 3. sigma_T (Desviación Estándar de Targets) , Eq. 2
-    # Mide cuán "desigual" es la distribución de probabilidad *entre* los targets.
-    # Un hardware ideal debería dar la misma probabilidad a todos los targets.
-    # Si sigma_T es alto, el hardware está sesgado.
-    
-    # Lista de probabilidades solo para los estados objetivo
-    P_s_list = [P.get(s, 0.0) for s in target_states]
 
-    if M > 0:
-        # Promedio de probabilidad POR target
-        P_bar_T = P_T / M 
-        # Suma de diferencias cuadradas
-        sum_sq_diff = sum((P_s - P_bar_T)**2 for P_s in P_s_list)
-        # Desviación estándar
-        sigma_T = math.sqrt(sum_sq_diff / M)
+def _compute_grade_score(
+    counts: dict[str, int],
+    target_states: list[str],
+    shots: int,
+    lambd: float,
+    mu: float,
+) -> dict[str, Any]:
+    """Score = P_T − λ·σ_T − μ·P_N, con fail-safe (score=0 si μ·P_N ≥ P_T)."""
+    P = {s: c / shots for s, c in counts.items()}
+    P_T = sum(P.get(s, 0.0) for s in target_states)
+    P_N = 1.0 - P_T
+
+    M = len(target_states)
+    if M:
+        p_list = [P.get(s, 0.0) for s in target_states]
+        p_bar = P_T / M
+        sigma_T = math.sqrt(sum((p - p_bar) ** 2 for p in p_list) / M)
     else:
-        # No hay targets, no hay desviación.
         sigma_T = 0.0
-        
-    # 4. Score Base: Score = PT - lambda*sigma_T - mu*PN , Eq. 1
-    # El score base es P_T, penalizado por la variabilidad (sigma_T)
-    # y por la probabilidad de fallo (P_N).
-    score_raw = P_T - (lambd * sigma_T) - (mu * P_N)
-    
-    score = score_raw 
-    
-    # 5. Restricción del Cero (Fail-Safe Operacional) , p. 7-8
-    # Si la penalización por fallos (mu * P_N) es mayor o igual
-    # que la probabilidad de éxito (P_T), el benchmark se considera un
-    # fallo total y el score es 0.
-    if mu * P_N >= P_T: 
+
+    score = P_T - (lambd * sigma_T) - (mu * P_N)
+    if mu * P_N >= P_T:
         score = 0.0
-        
-    # Retorna métricas clave
+
     return {
-        "score": max(0.0, score), # Asegura que el score final sea no negativo
+        "score": max(0.0, score),
         "P_T": P_T,
         "sigma_T": sigma_T,
         "P_N": P_N,
     }
 
-# --- CLASE PRINCIPAL FIGURE OF MERIT ---
+
+# -------------------------- FoM principal --------------------------
 
 class GroverFigureOfMerit(FigureOfMerit):
-    """
-    Implementa el benchmark GRADE (Grover's Algorithm Details Evaluation)
-    siguiendo el protocolo FigureOfMerit de Qonscious.
-    
-    Esta clase orquesta todo el proceso:
-    1. Configura el problema (Algoritmos 1 y 2).
-    2. Calcula las rondas óptimas.
-    3. Construye el oráculo (Algoritmo 3) y el difusor.
-    4. Ensambla el circuito de Grover.
-    5. Lo ejecuta en el backend.
-    6. Calcula el score (Algoritmo 4).
-    """
-    
-    # grover_fom.py  (solo la clase; asumo que ya tenés _optimal_grover_round
+    """GRADE: corre Grover multi-objetivo y puntúa el resultado."""
 
     def __init__(
         self,
         num_targets: int,
         lambd: float = 1.0,
         mu: float = 1.0,
-        *,                         # ← fuerza keyword-only
+        *,
         default_num_qubits: int | None = None,
         default_search_space_size: int | None = None,
         default_targets_int: list[int] | None = None,
         default_shots: int = 1024,
     ):
-        # parámetros “del score”
         self.default_num_targets = num_targets
         self.default_lambd = lambd
         self.default_mu = mu
-        # parámetros “del espacio de búsqueda” y ejecución
         self.default_num_qubits = default_num_qubits
         self.default_search_space_size = default_search_space_size
         self.default_targets_int = default_targets_int
         self.default_shots = default_shots
 
     def evaluate(self, backend_adapter: BackendAdapter, **kwargs) -> FigureOfMeritResult:
-        # 1) tomar defaults del __init__ y permitir override por kwargs
+        # Parámetros efectivos
         shots = kwargs.get("shots", self.default_shots)
         lambd = kwargs.get("lambda_factor", self.default_lambd)
-        mu    = kwargs.get("mu_factor",     self.default_mu)
+        mu = kwargs.get("mu_factor", self.default_mu)
+        n_user = kwargs.get("num_qubits", self.default_num_qubits)
+        N_user = kwargs.get("search_space_size", self.default_search_space_size)
+        T_user = kwargs.get("targets_int", self.default_targets_int)
 
-        n_user = kwargs.get("num_qubits",          self.default_num_qubits)
-        N_user = kwargs.get("search_space_size",   self.default_search_space_size)
-        T_user = kwargs.get("targets_int",         self.default_targets_int)
-
-        # 2) espacio y targets
+        # Espacio y targets
         M_req = kwargs.get("num_targets", self.default_num_targets)
         search_space, targets_binary = _generate_search_params(
             num_targets=M_req,
@@ -360,39 +189,37 @@ class GroverFigureOfMerit(FigureOfMerit):
         N = len(search_space)
         R = _optimal_grover_rounds(N, M)
 
-        # 3) circuito Grover (oracle+diffusor inline; endianness ya corregida en helpers)
+        # Circuito Grover
         qc = QuantumCircuit(n, n)
         qc.h(range(n))
-
-        oracle_qc    = _construct_oracle(targets_binary, n)
+        oracle_qc = _construct_oracle(targets_binary, n)
         diffusion_qc = _construct_diffusion(n)
-
         for _ in range(R):
-            qc.compose(oracle_qc,    qubits=range(n), inplace=True)
+            qc.compose(oracle_qc, qubits=range(n), inplace=True)
             qc.compose(diffusion_qc, qubits=range(n), inplace=True)
             qc.barrier()
-
         qc.measure(range(n), range(n))
 
-        # 4) ejecutar (el adapter transpila/ejecuta)
+        # Ejecución
         experiment_result = backend_adapter.run(qc, shots=shots)
         if experiment_result is None:
             raise RuntimeError("backend_adapter.run devolvió None.")
+        counts = (
+            experiment_result.get("counts", {})
+            if isinstance(experiment_result, dict)
+            else getattr(experiment_result, "counts", {})
+        )
 
-        # soportar dict u objeto
-        raw_counts = (experiment_result.get("counts", {}) if isinstance(experiment_result, dict)
-                      else getattr(experiment_result, "counts", {}))
+        # Score
+        metrics = _compute_grade_score(counts, targets_binary, shots, lambd, mu)
 
-        # 5) score GRADE
-        score_metrics = _compute_grade_score(raw_counts, targets_binary, shots, lambd, mu)
-
-        properties_details = {
+        properties = {
             "num_qubits": n,
             "search_space_size": N,
             "targets_count": M,
             "grover_iterations": R,
             "target_states": targets_binary,
-            **score_metrics,            # score, P_T, sigma_T, P_N
+            **metrics,
             "lambda_factor": lambd,
             "mu_factor": mu,
             "shots": shots,
@@ -401,6 +228,6 @@ class GroverFigureOfMerit(FigureOfMerit):
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "figure_of_merit": self.__class__.__name__,
-            "properties": properties_details,
+            "properties": properties,
             "experiment_result": experiment_result,
         }
