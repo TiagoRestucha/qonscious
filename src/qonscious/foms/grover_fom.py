@@ -18,13 +18,15 @@ if TYPE_CHECKING:
 
 
 # -------------------------- Helpers Grover --------------------------
-
 def _optimal_grover_rounds(N: int, M: int) -> int:
-    """Número óptimo de iteraciones de Grover (R)."""
+    """Número óptimo de iteraciones de Grover R = ⌊π/(4·θ)⌋, con θ = arcsin(√(M/N))."""
     if not (0 < M < N):
         return 0
+    if M == N / 2:
+        return 0
     theta = math.asin(math.sqrt(M / N))
-    R = int(math.floor((math.pi / (4 * theta)) - 0.5))
+    # Usar floor sigue siendo más robusto que round() para otros casos
+    R = int(math.floor(math.pi / (4 * theta)))
     return max(0, R)
 
 
@@ -34,7 +36,7 @@ def _generate_search_params(
     search_space_size: int | None = None,
     targets_int: list[int] | None = None,
 ) -> tuple[list[int], list[str]]:
-    """Devuelve (search_space, targets_binary) para Grover."""
+    """Devuelve (search_space, targets_binary) para Grover.""" 
     # Elegir n y N
     if num_qubits is not None:
         n = int(num_qubits)
@@ -117,7 +119,7 @@ def _compute_grade_score(
     lambd: float,
     mu: float,
 ) -> dict[str, Any]:
-    """Score = P_T − λ·σ_T − μ·P_N, con fail-safe (score=0 si μ·P_N ≥ P_T)."""
+    """Score = P_T - λ·σ_T - μ·P_N, con fail-safe (score=0 si μ·P_N ≥ P_T)."""
     P = {s: c / shots for s, c in counts.items()}
     P_T = sum(P.get(s, 0.0) for s in target_states)
     P_N = 1.0 - P_T
