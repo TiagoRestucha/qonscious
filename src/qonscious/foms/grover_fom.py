@@ -16,52 +16,42 @@ if TYPE_CHECKING:
     from qonscious.adapters.backend_adapter import BackendAdapter
     from qonscious.results.result_types import ExperimentResult, FigureOfMeritResult
 
-
+MIN_QUBITS = 2  # Grover does not make sense below 2 qubits (N<4)
 class GroverFigureOfMerit(FigureOfMerit):
-    """
-    Grover multi-objetivo: aplica fase -1 a varios estados marcados y mide.
-    Estructura estilo CHSH: __init__, compute_required_shots, evaluate. Helpers internos.
-    SIN barreras entre iteraciones.
-    """
 
     def __init__(
         self,
-        num_targets: int, #parametro obligatorio
+        num_targets: int,
         lambda_factor: float,
         mu_factor: float,
-        shots: int = 1024,
         num_qubits: int | None = None,
         targets_int: list[int] | None = None,
     ) -> None:
         self.num_targets = int(num_targets)
         self.lambda_factor = float(lambda_factor)
         self.mu_factor = float(mu_factor)
-        self.shots = int(shots)
         self.num_qubits = None if num_qubits is None else int(num_qubits)
         self.targets_int = None if targets_int is None else list(targets_int)
 
 
     def compute_required_shots(self) -> int:
-        return 2000  # fijo, tomado del __init__
+        return 1000# Future implementation could adapt this based on N, M, R, etc.
 
     def evaluate(self, backend_adapter: BackendAdapter) -> FigureOfMeritResult:
         """Ejecuta Grover con la config de self y devuelve métricas + resultado crudo."""
-        # 1) Espacio y targets
         search_space, target_bitstrings = self._make_search_space_and_targets(
             self.num_targets,
             self.num_qubits,
             self.targets_int
         )
-        M = len(target_bitstrings)                                # cantidad de targets
-        n = len(target_bitstrings[0]) if M > 0 else 1           # qubits efectivos e.g. "000" = 3
-        N = len(search_space)                                     # tamaño del espacio
-        R = self._optimal_rounds(N, M)                            # iteraciones óptimas
-
-        # 2) Circuito Grover (SIN barriers)
+        M = len(target_bitstrings)                                # Lenght of targets
+        n = len(target_bitstrings[0]) if M > 0 else 1             # Effective Qbits e.g. "000" = 3
+        N = len(search_space)                                     # Search space size
+        R = self._optimal_rounds(N, M)                            # Optimal Grover iterations
+        calc_shots = self.compute_required_shots()
         qc = self._build_grover_circuit(n, target_bitstrings, R)
 
-        # 3) Run
-        run_result: ExperimentResult = backend_adapter.run(qc, shots=self.shots)
+        run_result: ExperimentResult = backend_adapter.run(qc, shots=calc_shots)
         if run_result is None:
             raise RuntimeError("backend_adapter.run devolvió None.")
         counts = (
@@ -69,12 +59,15 @@ class GroverFigureOfMerit(FigureOfMerit):
             if isinstance(run_result, dict)
             else getattr(run_result, "counts", {})
         )
+        # Score calculation
+        metrics = self._compute_score(
+            counts,
+            target_bitstrings,
+            calc_shots, self.lambda_factor,
+            self.mu_factor
+        )
 
-        # 4) Score
-        metrics = self._compute_score(counts, target_bitstrings, self.shots, self.lambda_factor,
-                                       self.mu_factor)
-
-        # 5) Empaquetar
+        # Packaging result
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "figure_of_merit": self.__class__.__name__,
@@ -86,13 +79,12 @@ class GroverFigureOfMerit(FigureOfMerit):
                 "target_states": target_bitstrings,
                 "lambda_factor": self.lambda_factor,
                 "mu_factor": self.mu_factor,
-                "shots": self.shots,
+                "shots": calc_shots,
                 **metrics,
             },
             "experiment_result": run_result,
         }
 
-    # --- Internos (posicionales, simples) ---
     def _build_grover_circuit(self, n: int, targets: list[str], R: int) -> QuantumCircuit:
         qc = QuantumCircuit(n, n, name="Grover")
         qc.h(range(n))
@@ -110,32 +102,45 @@ class GroverFigureOfMerit(FigureOfMerit):
         num_qubits: int | None,
         targets_int: list[int] | None,
     ) -> tuple[list[int], list[str]]:
-        # Elegir n y N
+
+        # --- Elegir n (qubits) y N (tamaño del espacio) ---
         if num_qubits is not None:
             n = int(num_qubits)
-            N = 2**n
-            if N is not None and N <= 0:
-                raise ValueError("search_space_size debe ser > 0")
-            max_real = N
+            if n < MIN_QUBITS:
+                raise ValueError(
+                    f"GroverFoM: num_qubits={n} doesn't have any sense without entangelment"
+                    f"Grover requieres at least {MIN_QUBITS} Qbits (N>=4)."
+                )
         else:
-            n = max(1, math.ceil(math.log2(max(num_targets, 1))))
-            N = 2**n
-            max_real = N
+            # Si no lo pasan, inferimos y forzamos mínimo 2
+            if targets_int and len(targets_int) > 0:
+                max_val = max(targets_int)
+                # n para representar el mayor target (0 -> 1 bit), luego clamp a 2
+                inferred = 1 if max_val == 0 else math.ceil(math.log2(max_val + 1))
+            else:
+                # fallback simple a partir de cuántos objetivos hay
+                inferred = math.ceil(math.log2(max(num_targets, 1)))
+            n = max(MIN_QUBITS, inferred)
 
-        # Elegir targets
-        real_space = list(range(max_real))
+        N = 2**n
+        real_space = list(range(N))
+
+        # --- Elegir objetivos (enteros) dentro del rango real ---
         if targets_int is None:
             if num_targets > len(real_space):
-                raise ValueError(f"num_targets ({num_targets}) > tamaño del espacio real ({len(real_space)})")
+                raise ValueError(
+                    f"Num of Targets: ({num_targets}) > Search Space Lenght ({len(real_space)})"
+                )
             chosen = random.sample(real_space, k=num_targets)
         else:
             chosen = list(targets_int)
             for t in chosen:
-                if not (0 <= t < max_real):
-                    raise ValueError(f"target fuera de rango real: {t} ∉ [0,{max_real-1}]")
+                if not (0 <= t < N):
+                    raise ValueError(f"target out of range: {t} ∉ [0,{N-1}]")
 
+        # --- Formatear objetivos a bitstrings de ancho n ---
         targets_binary = [format(t, f"0{n}b") for t in chosen]
-        search_space = list(range(N))
+        search_space = real_space
         return search_space, targets_binary
 
     def _build_oracle(self, marked: list[str], n: int) -> QuantumCircuit:
@@ -151,7 +156,7 @@ class GroverFigureOfMerit(FigureOfMerit):
                 qc.mcx(list(range(n - 1)), tgt)
                 qc.h(tgt)
             else:
-                qc.z(tgt)  # n=1: Z directo (evita H-Z-H= X)
+                qc.z(tgt)  # Same as applying X and H around a Z
             for i in zeros:
                 qc.x(i)
         return qc
@@ -173,8 +178,8 @@ class GroverFigureOfMerit(FigureOfMerit):
     def _optimal_rounds(self, N: int, M: int) -> int:
         R = math.floor((math.pi / 4) * math.sqrt(N/M))
         return max(0, R)
-
     def _compute_score(
+
         self,
         counts: dict[str, int],
         targets: list[str],
@@ -198,4 +203,3 @@ class GroverFigureOfMerit(FigureOfMerit):
         raw = P_T - (lambd * sigma_T) - (mu * P_N)
         score = 0.0 if (mu * P_N >= P_T) else max(0.0, raw)
         return {"score": score, "P_T": P_T, "sigma_T": sigma_T, "P_N": P_N}
-

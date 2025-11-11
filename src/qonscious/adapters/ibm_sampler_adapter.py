@@ -60,7 +60,7 @@ class IBMSamplerAdapter(BackendAdapter):
     def run(self, circuit: QuantumCircuit, **kwargs) -> ExperimentResult:
         kwargs.setdefault("shots", 1024)
         sampler = Sampler(mode=self.backend)
-        transpiled_circuit = transpile(circuit, self.backend, optimization_level=3)
+        transpiled_circuit = transpile(circuit, self.backend, optimization_level=0)
         job = sampler.run([transpiled_circuit], **kwargs)
         result = job.result()
         timestamps = job.metrics().get("timestamps", {})
