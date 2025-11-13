@@ -40,7 +40,7 @@ class AerSimulatorAdapter(BaseSamplerAdapter):
         )
 
     def transpile(self, circuit: QuantumCircuit) -> QuantumCircuit:
-        return transpile(circuit, self.simulator, optimization_level=3)
+        return transpile(circuit, self.simulator, optimization_level=0)
 
     @cached_property
     def _backend_properties(self) -> AerBackendProperties | None:
