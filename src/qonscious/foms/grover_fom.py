@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from qonscious.results.result_types import ExperimentResult, FigureOfMeritResult
 
 MIN_QUBITS = 2  # Grover does not make sense below 2 qubits (N<4)
+
 class GroverFigureOfMerit(FigureOfMerit):
 
     def __init__(
