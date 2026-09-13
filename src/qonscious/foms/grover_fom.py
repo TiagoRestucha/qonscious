@@ -1,4 +1,9 @@
 # grade_fom.py
+"""GRADE: Figure of Merit basada en Grover (simple, sin barriers)
+This FoM is implemented based on the approach proposed in "Manor, S., Kumar, M., Behera, P., Khalid,
+A., & Zeng, O. (2025). GRADE: Grover-based Benchmarking Toolkit for Assessing Quantum Hardware.
+ ArXiv, abs/2504.19387"."""
+
 from __future__ import annotations
 
 import math
@@ -48,22 +53,22 @@ class GroverFigureOfMerit(FigureOfMerit):
         qc = self._build_grover_circuit(n, target_bitstrings, R)
 
         run_result: ExperimentResult = backend_adapter.run(qc, shots=calc_shots)
-        # Score calculation
         counts = run_result.get("counts", {})
-        properties: dict = self._compute_score(counts, target_bitstrings, calc_shots)
+        # 1. Cambiamos el nombre a 'metrics'
+        metrics = self._compute_score(counts, target_bitstrings, calc_shots)
 
-        #another plausibles properties to add could be:
-        #properties: dict[str, Any] = {
-        #    "num_qubits": n,
-        #    "targets_count": M,
-        #    "grover_iterations": R,
-        #    "search_space_size": N,
-        #    "target_states": target_bitstrings,
-        #    "lambda_factor": self.lambda_factor,
-        #    "mu_factor": self.mu_factor,
-        #    "shots": calc_shots,
-        #    **metrics  # properties: dict =.... should be renamed to metrics
-        #}
+        # 2. Descomentamos y armamos el diccionario properties completo
+        properties = {
+            "num_qubits": n,
+            "targets_count": M,
+            "grover_iterations": R,
+            "search_space_size": N,
+            "target_states": target_bitstrings, # ¡Acá se guarda el target ('011')!
+            "lambda_factor": self.lambda_factor,
+            "mu_factor": self.mu_factor,
+            "shots": calc_shots,
+            **metrics
+        }
         evaluation_result: FigureOfMeritResult = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "figure_of_merit": self.__class__.__name__,
