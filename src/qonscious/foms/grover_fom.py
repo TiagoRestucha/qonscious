@@ -1,5 +1,5 @@
 # grade_fom.py
-"""GRADE: Figure of Merit basada en Grover (simple, sin barriers)
+"""GRADE: Figure of Merit based on Grover's algorithm.
 This FoM is implemented based on the approach proposed in "Manor, S., Kumar, M., Behera, P., Khalid,
 A., & Zeng, O. (2025). GRADE: Grover-based Benchmarking Toolkit for Assessing Quantum Hardware.
  ArXiv, abs/2504.19387"."""
@@ -53,22 +53,21 @@ class GroverFigureOfMerit(FigureOfMerit):
         qc = self._build_grover_circuit(n, target_bitstrings, R)
 
         run_result: ExperimentResult = backend_adapter.run(qc, shots=calc_shots)
-        # Score calculation
         counts = run_result.get("counts", {})
-        properties: dict = self._compute_score(counts, target_bitstrings, calc_shots)
 
-        #another plausibles properties to add could be:
-        #properties: dict[str, Any] = {
-        #    "num_qubits": n,
-        #    "targets_count": M,
-        #    "grover_iterations": R,
-        #    "search_space_size": N,
-        #    "target_states": target_bitstrings,
-        #    "lambda_factor": self.lambda_factor,
-        #    "mu_factor": self.mu_factor,
-        #    "shots": calc_shots,
-        #    **metrics  # properties: dict =.... should be renamed to metrics
-        #}
+        metrics = self._compute_score(counts, target_bitstrings, calc_shots)
+
+        properties = {
+            "num_qubits": n,
+            "targets_count": M,
+            "grover_iterations": R,
+            "search_space_size": N,
+            "target_states": target_bitstrings, # Stores the target states in binary format
+            "lambda_factor": self.lambda_factor,
+            "mu_factor": self.mu_factor,
+            "shots": calc_shots,
+            **metrics
+        }
         evaluation_result: FigureOfMeritResult = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "figure_of_merit": self.__class__.__name__,
@@ -80,9 +79,22 @@ class GroverFigureOfMerit(FigureOfMerit):
     def compute_required_shots(self) -> int:
         return 2000# Future implementation could adapt this based on N, M, R, etc.
 
-    def _optimal_rounds(self, N: int, M: int) -> int: #times the oracle+diffusion is applied
-        R = math.floor((math.pi / 4) * math.sqrt(N/M))
-        return max(0, R)
+    # Finds the optimal number of Grover iterations R for given N and M
+    def _optimal_rounds(self, N: int, M: int) -> int:
+
+        theta = math.asin(math.sqrt(M / N))
+        R_continuous = (math.pi / (4 * theta)) - 0.5
+
+        R_floor = max(0, math.floor(R_continuous))
+        R_ceil  = max(0, math.ceil(R_continuous))
+
+        if R_floor == R_ceil:
+            return R_floor
+
+        p_floor = math.sin((2 * R_floor + 1) * theta) ** 2
+        p_ceil  = math.sin((2 * R_ceil  + 1) * theta) ** 2
+
+        return R_ceil if p_ceil > p_floor else R_floor
 
     def _make_search_space_and_targets(
         self,
@@ -102,7 +114,6 @@ class GroverFigureOfMerit(FigureOfMerit):
             # If not specified, infer n from targets or num_tragets
             if targets_int and len(targets_int) > 0:
                 max_val = max(targets_int)
-                # n para representar el mayor target (0 -> 1 bit), luego clamp a 2
                 inferred = 1 if max_val == 0 else math.ceil(math.log2(max_val + 1))
             else:
                 inferred = math.ceil(math.log2(max(num_targets, 1)))
@@ -111,7 +122,7 @@ class GroverFigureOfMerit(FigureOfMerit):
         N = 2**n
         real_space = list(range(N))
 
-        # Picking tragets from integers or randomly
+        # Picking targets from integers or randomly
         if targets_int is None:
             if num_targets > len(real_space):
                 raise ValueError(
@@ -124,7 +135,6 @@ class GroverFigureOfMerit(FigureOfMerit):
                 if not (0 <= t < N):
                     raise ValueError(f"target out of range: {t} ∉ [0,{N-1}]")
 
-        # format tragets to binary strings
         targets_binary = [format(t, f"0{n}b") for t in chosen]
         search_space = real_space
         return search_space, targets_binary
@@ -205,5 +215,4 @@ class GroverFigureOfMerit(FigureOfMerit):
         return {"score": score,
                 "P_T": P_T,
                 "sigma_T": sigma_T,
-                "P_N": P_N,
-            }
+                "P_N": P_N,}
